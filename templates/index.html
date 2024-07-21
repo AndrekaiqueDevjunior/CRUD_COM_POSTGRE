@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PostgreSQL Connection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Conectar ao Banco de Dados PostgreSQL</h1>
+        <button id="connectButton">Conectar</button>
+        <div id="result">{{ error }}</div>
+    </div>
+    <script>
+        document.getElementById('connectButton').addEventListener('click', function() {
+            window.location.href = "{{ url_for('connect') }}";
+        });
+    </script>
+</body>
+</html>
