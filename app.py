@@ -16,12 +16,12 @@ app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')  # Usar a chave secreta do .env ou um valor padrão
 
 # Configurações do Flask-Mail
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')  # Usar variável de ambiente
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')  # Usar variável de ambiente
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USE_SSL'] = False
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
+app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL', 'False') == 'True'
 
 mail = Mail(app)
 
@@ -159,9 +159,6 @@ def reset_password_request():
                 flash('E-mail não encontrado.', 'danger')
     return render_template('reset_password_request.html')
 
-
-
-
 @app.route('/reset_password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
     if request.method == 'POST':
@@ -178,7 +175,6 @@ def reset_password(token):
             flash('Sua senha foi redefinida com sucesso.', 'success')
             return redirect(url_for('login'))
     return render_template('reset_password.html', token=token)
-
 
 @app.route('/logout')
 def logout():
@@ -226,7 +222,6 @@ def feedback():
         return redirect(url_for('feedback'))
     
     return render_template('feedback.html')
-
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -297,7 +292,6 @@ def get_user_by_id(user_id):
             }
     return None
 
-
 def update_user(user_id, username, email, password=None, profile_picture_url=None):
     conn = connect_to_postgres()
     if conn:
@@ -318,7 +312,6 @@ def update_user(user_id, username, email, password=None, profile_picture_url=Non
         conn.commit()
         cur.close()
         conn.close()
-
 
 @app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
 def edit_user(user_id):
