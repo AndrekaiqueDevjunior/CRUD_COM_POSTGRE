@@ -6,6 +6,7 @@ import psycopg2
 from psycopg2 import OperationalError, Error
 from dotenv import load_dotenv
 from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -23,6 +24,9 @@ app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USE_SSL'] = False
 
 mail = Mail(app)
+
+# Configurações adicionais
+app.config['SECURITY_PASSWORD_SALT'] = os.getenv('SECURITY_PASSWORD_SALT', 'my_precious_two')
 
 UPLOAD_FOLDER = 'static/uploads/'
 ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif'}
@@ -60,6 +64,22 @@ def save_profile_picture(profile_picture):
         profile_picture.save(picture_path)
         return picture_filename
     return None
+
+def generate_confirmation_token(email):
+    serializer = URLSafeTimedSerializer(app.secret_key)
+    return serializer.dumps(email, salt=app.config['SECURITY_PASSWORD_SALT'])
+
+def confirm_token(token, expiration=3600):
+    serializer = URLSafeTimedSerializer(app.secret_key)
+    try:
+        email = serializer.loads(
+            token,
+            salt=app.config['SECURITY_PASSWORD_SALT'],
+            max_age=expiration
+        )
+    except:
+        return False
+    return email
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
@@ -113,6 +133,53 @@ def login():
             return render_template('login.html')
     return render_template('login.html')
 
+@app.route('/reset_password_request', methods=['GET', 'POST'])
+def reset_password_request():
+    if request.method == 'POST':
+        email = request.form['email']
+        conn = connect_to_postgres()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            cur.close()
+            conn.close()
+            if user:
+                token = generate_confirmation_token(email)
+                reset_url = url_for('reset_password', token=token, _external=True)
+                msg = Message('Redefinição de Senha', sender=app.config['MAIL_USERNAME'], recipients=[email])
+                msg.body = f'Para redefinir sua senha, clique no seguinte link: {reset_url}'
+                try:
+                    mail.send(msg)
+                    flash('Um e-mail de redefinição de senha foi enviado.', 'info')
+                except Exception as e:
+                    flash(f'Houve um erro ao enviar o e-mail de redefinição de senha: {str(e)}', 'danger')
+                return redirect(url_for('login'))
+            else:
+                flash('E-mail não encontrado.', 'danger')
+    return render_template('reset_password_request.html')
+
+
+
+
+@app.route('/reset_password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    if request.method == 'POST':
+        password = request.form['password']
+        email = request.form['email']
+        hashed_password = generate_password_hash(password)
+        conn = connect_to_postgres()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET password = %s WHERE email = %s", (hashed_password, email))
+            conn.commit()
+            cur.close()
+            conn.close()
+            flash('Sua senha foi redefinida com sucesso.', 'success')
+            return redirect(url_for('login'))
+    return render_template('reset_password.html', token=token)
+
+
 @app.route('/logout')
 def logout():
     session.pop('username', None)
@@ -140,7 +207,7 @@ def feedback():
         # Cria a mensagem de e-mail
         msg = Message(
             'Novo Feedback Recebido',
-            sender='andrekaidellisola@gmail.com',  # E-mail remetente
+            sender=email,  # E-mail remetente do usuário
             recipients=['andrekaidellisola@gmail.com'],  # E-mail destinatário
             body=f'Nome: {name}\nEmail: {email}\n\nFeedback:\n{feedback}'
         )
@@ -159,6 +226,7 @@ def feedback():
         return redirect(url_for('feedback'))
     
     return render_template('feedback.html')
+
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -216,7 +284,7 @@ def get_user_by_id(user_id):
     conn = connect_to_postgres()
     if conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, username, profile_picture FROM users WHERE id = %s", (user_id,))
+        cur.execute("SELECT id, username, email, profile_picture FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
         cur.close()
         conn.close()
@@ -224,11 +292,13 @@ def get_user_by_id(user_id):
             return {
                 'id': user[0],
                 'username': user[1],
-                'profile_picture': user[2]
+                'email': user[2],
+                'profile_picture': user[3]
             }
     return None
 
-def update_user(user_id, username, password, profile_picture_url):
+
+def update_user(user_id, username, email, password=None, profile_picture_url=None):
     conn = connect_to_postgres()
     if conn:
         cur = conn.cursor()
@@ -236,18 +306,19 @@ def update_user(user_id, username, password, profile_picture_url):
             hashed_password = generate_password_hash(password)
             cur.execute("""
                 UPDATE users
-                SET username = %s, password = %s, profile_picture = %s
+                SET username = %s, email = %s, password = %s, profile_picture = %s
                 WHERE id = %s
-            """, (username, hashed_password, profile_picture_url, user_id))
+            """, (username, email, hashed_password, profile_picture_url, user_id))
         else:
             cur.execute("""
                 UPDATE users
-                SET username = %s, profile_picture = %s
+                SET username = %s, email = %s, profile_picture = %s
                 WHERE id = %s
-            """, (username, profile_picture_url, user_id))
+            """, (username, email, profile_picture_url, user_id))
         conn.commit()
         cur.close()
         conn.close()
+
 
 @app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
 def edit_user(user_id):
@@ -259,6 +330,7 @@ def edit_user(user_id):
 
     if request.method == 'POST':
         username = request.form['username']
+        email = request.form['email']
         password = request.form['password']
         
         file = request.files.get('profile_picture')
@@ -269,7 +341,7 @@ def edit_user(user_id):
         else:
             profile_picture_url = user['profile_picture']
 
-        update_user(user_id, username, password, profile_picture_url)
+        update_user(user_id, username, email, password, profile_picture_url)
         flash('Usuário atualizado com sucesso!', 'success')
         return redirect(url_for('users'))
 
@@ -303,7 +375,6 @@ def search_users():
             conn.close()
         return render_template('users.html', users=users)
     return redirect(url_for('users'))
-
 
 if __name__ == '__main__':
     app.run(debug=True)
