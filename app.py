@@ -1,4 +1,5 @@
 import os
+import logging
 from flask import Flask, jsonify, render_template, request, redirect, url_for, session, flash, send_from_directory
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
 
@@ -16,12 +18,12 @@ app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')  # Usar a chave secreta do .env ou um valor padrão
 
 # Configurações do Flask-Mail
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
-app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL', 'False') == 'True'
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')  # Usar variável de ambiente
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')  # Usar variável de ambiente
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USE_SSL'] = False
 
 mail = Mail(app)
 
@@ -159,6 +161,9 @@ def reset_password_request():
                 flash('E-mail não encontrado.', 'danger')
     return render_template('reset_password_request.html')
 
+
+
+
 @app.route('/reset_password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
     if request.method == 'POST':
@@ -175,6 +180,7 @@ def reset_password(token):
             flash('Sua senha foi redefinida com sucesso.', 'success')
             return redirect(url_for('login'))
     return render_template('reset_password.html', token=token)
+
 
 @app.route('/logout')
 def logout():
@@ -223,11 +229,13 @@ def feedback():
     
     return render_template('feedback.html')
 
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
+        email = request.form['email']  # Adicione esta linha
         profile_picture = request.files.get('profile_picture')
 
         hashed_password = generate_password_hash(password)
@@ -235,15 +243,17 @@ def register():
 
         try:
             execute_query(
-                "INSERT INTO users (username, password, profile_picture) VALUES (%s, %s, %s)",
-                (username, hashed_password, picture_filename)
+                "INSERT INTO users (username, password, email, profile_picture) VALUES (%s, %s, %s, %s)",
+                (username, hashed_password, email, picture_filename)  # Adicione o email aqui
             )
             flash(f"Usuário {username} registrado com sucesso!")
             return redirect(url_for('login'))
         except Error as e:
+            logging.error(f"Erro ao registrar usuário {username}: {e}")
             flash("Usuário já existe.")
             return render_template('register.html')
     return render_template('register.html')
+
 
 @app.route('/users')
 def users():
@@ -292,6 +302,7 @@ def get_user_by_id(user_id):
             }
     return None
 
+
 def update_user(user_id, username, email, password=None, profile_picture_url=None):
     conn = connect_to_postgres()
     if conn:
@@ -312,6 +323,7 @@ def update_user(user_id, username, email, password=None, profile_picture_url=Non
         conn.commit()
         cur.close()
         conn.close()
+
 
 @app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
 def edit_user(user_id):
@@ -368,6 +380,30 @@ def search_users():
             conn.close()
         return render_template('users.html', users=users)
     return redirect(url_for('users'))
+
+def create_users_table():
+    conn = connect_to_postgres()
+    if conn:
+        cur = conn.cursor()
+        create_table_query = '''
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(50) UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            email VARCHAR(100) UNIQUE NOT NULL,
+            profile_picture VARCHAR(255)
+        );
+        '''
+        try:
+            cur.execute(create_table_query)
+            conn.commit()
+        except Exception as e:
+            print(f"Error creating table: {e}")
+        finally:
+            cur.close()
+            conn.close()
+
+
 
 if __name__ == '__main__':
     app.run(debug=True)
