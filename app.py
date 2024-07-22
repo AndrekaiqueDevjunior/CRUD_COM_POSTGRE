@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask, jsonify, render_template, request, redirect, url_for, session, flash, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_from_directory
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import psycopg2
@@ -9,19 +9,26 @@ from dotenv import load_dotenv
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 
+# Configuração do logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
 
 # Criação da instância do Flask
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')  # Usar a chave secreta do .env ou um valor padrão
+
+# Configurações do Flask
+app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')  # Usar chave secreta do .env ou um valor padrão
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
+app.config['UPLOAD_FOLDER'] = 'static/uploads/'
+ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif'}
 
 # Configurações do Flask-Mail
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')  # Usar variável de ambiente
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')  # Usar variável de ambiente
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USE_SSL'] = False
 
@@ -29,10 +36,6 @@ mail = Mail(app)
 
 # Configurações adicionais
 app.config['SECURITY_PASSWORD_SALT'] = os.getenv('SECURITY_PASSWORD_SALT', 'my_precious_two')
-
-UPLOAD_FOLDER = 'static/uploads/'
-ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -47,7 +50,7 @@ def connect_to_postgres():
         )
         return conn
     except OperationalError as e:
-        print(f"Error connecting to the database: {e}")
+        logging.error(f"Error connecting to the database: {e}")
         return None
 
 def execute_query(query, params=None):
@@ -167,8 +170,14 @@ def reset_password_request():
 @app.route('/reset_password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
     if request.method == 'POST':
-        password = request.form['password']
-        email = request.form['email']
+        logging.debug(f"Form data: {request.form}")
+        password = request.form.get('password')
+        email = request.form.get('email')
+        
+        if not email or not password:
+            flash('Email e senha são obrigatórios.', 'danger')
+            return render_template('reset_password.html', token=token)
+
         hashed_password = generate_password_hash(password)
         conn = connect_to_postgres()
         if conn:
@@ -179,7 +188,10 @@ def reset_password(token):
             conn.close()
             flash('Sua senha foi redefinida com sucesso.', 'success')
             return redirect(url_for('login'))
+        else:
+            flash('Erro ao conectar ao banco de dados.', 'danger')
     return render_template('reset_password.html', token=token)
+
 
 
 @app.route('/logout')

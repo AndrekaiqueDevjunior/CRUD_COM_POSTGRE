@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copie o restante dos arquivos da aplicação para o diretório de trabalho
 COPY . .
 
+# Copie o arquivo .env
+COPY .env .env
+
 # Exponha a porta que a aplicação usará
 EXPOSE 5000
 
