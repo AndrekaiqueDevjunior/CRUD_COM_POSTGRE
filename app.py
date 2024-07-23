@@ -187,7 +187,7 @@ def view_user(user_id):
     conn = connect_to_postgres()
     if conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, username, profile_picture FROM users WHERE id = %s", (user_id,))
+        cur.execute("SELECT id, username, email, profile_picture FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
         cur.close()
         conn.close()
