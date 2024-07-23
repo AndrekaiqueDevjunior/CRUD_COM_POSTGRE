@@ -39,7 +39,12 @@
         {% endwith %}
 
         <h1 class="my-4">Detalhes do Usuário</h1>
-        <img src="{{ url_for('static', filename=user[2]) }}" alt="Profile Picture" class="profile-img mb-3">
+        <!-- Adicionando verificação para a imagem do perfil -->
+        {% if user[2] %}
+            <img src="{{ url_for('static', filename='uploads/' + user[2]) }}" alt="Profile Picture" class="profile-img mb-3">
+        {% else %}
+            <img src="{{ url_for('static', filename='uploads/default.jpg') }}" alt="Default Profile Picture" class="profile-img mb-3">
+        {% endif %}
         <p><strong>ID:</strong> {{ user[0] }}</p>
         <p><strong>Username:</strong> {{ user[1] }}</p>
 

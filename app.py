@@ -8,6 +8,8 @@ from psycopg2 import OperationalError, Error
 from dotenv import load_dotenv
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
+import dropbox
+import requests
 
 # Configuração do logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,7 +21,7 @@ load_dotenv()
 app = Flask(__name__)
 
 # Configurações do Flask
-app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')  # Usar chave secreta do .env ou um valor padrão
+app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 app.config['UPLOAD_FOLDER'] = 'static/uploads/'
 ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif'}
@@ -36,6 +38,13 @@ mail = Mail(app)
 
 # Configurações adicionais
 app.config['SECURITY_PASSWORD_SALT'] = os.getenv('SECURITY_PASSWORD_SALT', 'my_precious_two')
+
+# Configuração do Dropbox
+DROPBOX_CLIENT_ID = os.getenv('DROPBOX_CLIENT_ID')
+DROPBOX_CLIENT_SECRET = os.getenv('DROPBOX_CLIENT_SECRET')
+DROPBOX_REDIRECT_URI = os.getenv('DROPBOX_REDIRECT_URI')
+DROPBOX_ACCESS_TOKEN = os.getenv('DROPBOX_ACCESS_TOKEN')
+dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -69,6 +78,10 @@ def save_profile_picture(profile_picture):
         profile_picture.save(picture_path)
         return picture_filename
     return None
+
+def save_to_dropbox(local_path, dropbox_path):
+    with open(local_path, 'rb') as f:
+        dbx.files_upload(f.read(), dropbox_path)
 
 def generate_confirmation_token(email):
     serializer = URLSafeTimedSerializer(app.secret_key)
@@ -113,160 +126,6 @@ def menu():
         return redirect(url_for('login'))
     return render_template('menu.html')
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        conn = connect_to_postgres()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT password, profile_picture FROM users WHERE username = %s", (username,))
-            user = cur.fetchone()
-            cur.close()
-            conn.close()
-            if user and check_password_hash(user[0], password):
-                session['username'] = username
-                session['profile_picture'] = user[1]  # Save the profile picture URL in the session
-                flash(f'Bem-vindo, {username}!', 'success')
-                return redirect(url_for('menu'))
-            else:
-                flash("Usuário ou senha inválidos.")
-                return render_template('login.html')
-        else:
-            flash("Erro ao conectar ao banco de dados.")
-            return render_template('login.html')
-    return render_template('login.html')
-
-@app.route('/reset_password_request', methods=['GET', 'POST'])
-def reset_password_request():
-    if request.method == 'POST':
-        email = request.form['email']
-        conn = connect_to_postgres()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
-            user = cur.fetchone()
-            cur.close()
-            conn.close()
-            if user:
-                token = generate_confirmation_token(email)
-                reset_url = url_for('reset_password', token=token, _external=True)
-                msg = Message('Redefinição de Senha', sender=app.config['MAIL_USERNAME'], recipients=[email])
-                msg.body = f'Para redefinir sua senha, clique no seguinte link: {reset_url}'
-                try:
-                    mail.send(msg)
-                    flash('Um e-mail de redefinição de senha foi enviado.', 'info')
-                except Exception as e:
-                    flash(f'Houve um erro ao enviar o e-mail de redefinição de senha: {str(e)}', 'danger')
-                return redirect(url_for('login'))
-            else:
-                flash('E-mail não encontrado.', 'danger')
-    return render_template('reset_password_request.html')
-
-
-
-
-@app.route('/reset_password/<token>', methods=['GET', 'POST'])
-def reset_password(token):
-    if request.method == 'POST':
-        logging.debug(f"Form data: {request.form}")
-        password = request.form.get('password')
-        email = request.form.get('email')
-        
-        if not email or not password:
-            flash('Email e senha são obrigatórios.', 'danger')
-            return render_template('reset_password.html', token=token)
-
-        hashed_password = generate_password_hash(password)
-        conn = connect_to_postgres()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("UPDATE users SET password = %s WHERE email = %s", (hashed_password, email))
-            conn.commit()
-            cur.close()
-            conn.close()
-            flash('Sua senha foi redefinida com sucesso.', 'success')
-            return redirect(url_for('login'))
-        else:
-            flash('Erro ao conectar ao banco de dados.', 'danger')
-    return render_template('reset_password.html', token=token)
-
-
-
-@app.route('/logout')
-def logout():
-    session.pop('username', None)
-    session.pop('profile_picture', None)  # Remove the profile picture from session
-    flash('Você foi desconectado com sucesso.', 'info')
-    return redirect(url_for('login'))
-
-@app.route('/settings', methods=['GET', 'POST'])
-def settings():
-    if not is_logged_in():
-        return redirect(url_for('login'))
-    if request.method == 'POST':
-        # Adicionar lógica para processar configurações
-        flash('Configurações salvas com sucesso!', 'success')
-        return redirect(url_for('settings'))
-    return render_template('settings.html')
-
-@app.route('/feedback', methods=['GET', 'POST'])
-def feedback():
-    if request.method == 'POST':
-        name = request.form['name']
-        email = request.form['email']
-        feedback = request.form['feedback']
-        
-        # Cria a mensagem de e-mail
-        msg = Message(
-            'Novo Feedback Recebido',
-            sender=email,  # E-mail remetente do usuário
-            recipients=['andrekaidellisola@gmail.com'],  # E-mail destinatário
-            body=f'Nome: {name}\nEmail: {email}\n\nFeedback:\n{feedback}'
-        )
-
-        # Adicione uma impressão para depuração
-        print(f"Sending email to: {msg.recipients}")
-        print(f"Email body: {msg.body}")
-
-        # Envia o e-mail
-        try:
-            mail.send(msg)
-            flash('Feedback enviado com sucesso!', 'success')
-        except Exception as e:
-            flash(f'Houve um erro ao enviar o feedback: {str(e)}', 'danger')
-        
-        return redirect(url_for('feedback'))
-    
-    return render_template('feedback.html')
-
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        email = request.form['email']  # Adicione esta linha
-        profile_picture = request.files.get('profile_picture')
-
-        hashed_password = generate_password_hash(password)
-        picture_filename = save_profile_picture(profile_picture)
-
-        try:
-            execute_query(
-                "INSERT INTO users (username, password, email, profile_picture) VALUES (%s, %s, %s, %s)",
-                (username, hashed_password, email, picture_filename)  # Adicione o email aqui
-            )
-            flash(f"Usuário {username} registrado com sucesso!")
-            return redirect(url_for('login'))
-        except Error as e:
-            logging.error(f"Erro ao registrar usuário {username}: {e}")
-            flash("Usuário já existe.")
-            return render_template('register.html')
-    return render_template('register.html')
-
-
 @app.route('/users')
 def users():
     if not is_logged_in():
@@ -281,6 +140,45 @@ def users():
     else:
         users = []
     return render_template('users.html', users=users)
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        password = request.form['password']
+        profile_picture = request.files.get('profile_picture')
+        
+        if not username or not email or not password:
+            flash('Todos os campos são obrigatórios.', 'danger')
+            return render_template('register.html')
+
+        hashed_password = generate_password_hash(password)
+        picture_filename = None
+
+        if profile_picture and allowed_file(profile_picture.filename):
+            picture_filename = save_profile_picture(profile_picture)
+            dropbox_path = f"/profile_pictures/{picture_filename}"
+            save_to_dropbox(os.path.join(app.config['UPLOAD_FOLDER'], picture_filename), dropbox_path)
+
+        try:
+            conn = connect_to_postgres()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO users (username, email, password, profile_picture)
+                    VALUES (%s, %s, %s, %s)
+                """, (username, email, hashed_password, picture_filename))
+                conn.commit()
+                cur.close()
+                conn.close()
+                flash("Usuário cadastrado com sucesso!", 'success')
+                return redirect(url_for('login'))
+            else:
+                flash("Erro ao conectar ao banco de dados.", 'danger')
+        except Error as e:
+            flash(f"Erro ao cadastrar usuário: {e}", 'danger')
+    return render_template('register.html')
 
 @app.route('/view_user/<int:user_id>')
 def view_user(user_id):
@@ -314,7 +212,6 @@ def get_user_by_id(user_id):
             }
     return None
 
-
 def update_user(user_id, username, email, password=None, profile_picture_url=None):
     conn = connect_to_postgres()
     if conn:
@@ -336,7 +233,6 @@ def update_user(user_id, username, email, password=None, profile_picture_url=Non
         cur.close()
         conn.close()
 
-
 @app.route('/edit_user/<int:user_id>', methods=['GET', 'POST'])
 def edit_user(user_id):
     user = get_user_by_id(user_id)
@@ -348,13 +244,15 @@ def edit_user(user_id):
     if request.method == 'POST':
         username = request.form['username']
         email = request.form['email']
-        password = request.form['password']
+        password = request.form.get('password')
         
         file = request.files.get('profile_picture')
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            profile_picture_url = url_for('uploaded_file', filename=filename)
+            dropbox_path = f"/profile_pictures/{filename}"
+            save_to_dropbox(os.path.join(app.config['UPLOAD_FOLDER'], filename), dropbox_path)
+            profile_picture_url = dropbox_path
         else:
             profile_picture_url = user['profile_picture']
 
@@ -363,6 +261,178 @@ def edit_user(user_id):
         return redirect(url_for('users'))
 
     return render_template('edit_user.html', user=user)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+        conn = connect_to_postgres()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, username, password FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            cur.close()
+            conn.close()
+            if user and check_password_hash(user[2], password):
+                session['username'] = user[1]
+                session['user_id'] = user[0]
+                flash("Login bem-sucedido!", 'success')
+                return redirect(url_for('menu'))
+            else:
+                flash("Credenciais inválidas. Tente novamente.", 'danger')
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('user_id', None)
+    session.pop('username', None)
+    flash('Você saiu com sucesso!', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/dropbox_login')
+def dropbox_login():
+    auth_url = f"https://www.dropbox.com/oauth2/authorize?client_id={DROPBOX_CLIENT_ID}&response_type=code&redirect_uri={DROPBOX_REDIRECT_URI}"
+    return redirect(auth_url)
+
+@app.route('/dropbox_callback')
+def dropbox_callback():
+    code = request.args.get('code')
+    if not code:
+        flash('Código de autenticação não encontrado.', 'danger')
+        return redirect(url_for('index'))
+
+    token_url = 'https://api.dropboxapi.com/oauth2/token'
+    payload = {
+        'code': code,
+        'grant_type': 'authorization_code',
+        'client_id': DROPBOX_CLIENT_ID,
+        'client_secret': DROPBOX_CLIENT_SECRET,
+        'redirect_uri': DROPBOX_REDIRECT_URI
+    }
+    response = requests.post(token_url, data=payload)
+    if response.status_code == 200:
+        data = response.json()
+        session['dropbox_access_token'] = data.get('access_token')
+        flash('Conectado ao Dropbox com sucesso!', 'success')
+        return redirect(url_for('index'))
+    else:
+        flash('Erro ao conectar ao Dropbox.', 'danger')
+        return redirect(url_for('index'))
+
+def refresh_dropbox_token(refresh_token):
+    url = "https://api.dropboxapi.com/oauth2/token"
+    data = {
+        'grant_type': 'refresh_token',
+        'refresh_token': refresh_token,
+        'client_id': os.getenv('DROPBOX_CLIENT_ID'),
+        'client_secret': os.getenv('DROPBOX_CLIENT_SECRET')
+    }
+    response = requests.post(url, data=data)
+    if response.status_code == 200:
+        new_token = response.json().get('access_token')
+        # Atualize o token no seu arquivo .env ou outro local seguro
+        # Aqui você deve garantir que o novo token seja armazenado corretamente
+        return new_token
+    else:
+        # Trate erros de renovação de token
+        print("Erro ao renovar o token:", response.json())
+        return None
+
+
+@app.route('/reset_password_request', methods=['GET', 'POST'])
+def reset_password_request():
+    if request.method == 'POST':
+        email = request.form['email']
+        conn = connect_to_postgres()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+            user = cur.fetchone()
+            cur.close()
+            conn.close()
+            if user:
+                token = generate_confirmation_token(email)
+                reset_url = url_for('reset_password', token=token, _external=True)
+                msg = Message('Redefinição de Senha', sender=app.config['MAIL_USERNAME'], recipients=[email])
+                msg.body = f'Para redefinir sua senha, clique no seguinte link: {reset_url}'
+                try:
+                    mail.send(msg)
+                    flash('Um e-mail de redefinição de senha foi enviado.', 'info')
+                except Exception as e:
+                    flash(f'Houve um erro ao enviar o e-mail de redefinição de senha: {str(e)}', 'danger')
+                return redirect(url_for('login'))
+            else:
+                flash('E-mail não encontrado.', 'danger')
+    return render_template('reset_password_request.html')
+
+
+
+
+@app.route('/reset_password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    if request.method == 'POST':
+        password = request.form['password']
+        email = request.form['email']
+        hashed_password = generate_password_hash(password)
+        conn = connect_to_postgres()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET password = %s WHERE email = %s", (hashed_password, email))
+            conn.commit()
+            cur.close()
+            conn.close()
+            flash('Sua senha foi redefinida com sucesso.', 'success')
+            return redirect(url_for('login'))
+    return render_template('reset_password.html', token=token)
+
+# Exemplo de uso
+refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
+new_access_token = refresh_dropbox_token(refresh_token)
+if new_access_token:
+    # Atualize o Dropbox SDK com o novo token
+    dbx = dropbox.Dropbox(new_access_token)
+
+@app.route('/settings', methods=['GET', 'POST'])
+def settings():
+    if not is_logged_in():
+        return redirect(url_for('login'))
+    if request.method == 'POST':
+        # Adicionar lógica para processar configurações
+        flash('Configurações salvas com sucesso!', 'success')
+        return redirect(url_for('settings'))
+    return render_template('settings.html')
+
+
+@app.route('/feedback', methods=['GET', 'POST'])
+def feedback():
+    if request.method == 'POST':
+        name = request.form['name']
+        email = request.form['email']
+        feedback = request.form['feedback']
+        
+        # Cria a mensagem de e-mail
+        msg = Message(
+            'Novo Feedback Recebido',
+            sender=email,  # E-mail remetente do usuário
+            recipients=['andrekaidellisola@gmail.com'],  # E-mail destinatário
+            body=f'Nome: {name}\nEmail: {email}\n\nFeedback:\n{feedback}'
+        )
+
+        # Adicione uma impressão para depuração
+        print(f"Sending email to: {msg.recipients}")
+        print(f"Email body: {msg.body}")
+
+        # Envia o e-mail
+        try:
+            mail.send(msg)
+            flash('Feedback enviado com sucesso!', 'success')
+        except Exception as e:
+            flash(f'Houve um erro ao enviar o feedback: {str(e)}', 'danger')
+        
+        return redirect(url_for('feedback'))
+    
+    return render_template('feedback.html')
 
 @app.route('/delete_user/<int:user_id>', methods=['POST'])
 def delete_user(user_id):
@@ -377,45 +447,6 @@ def delete_user(user_id):
         conn.close()
     flash("Usuário deletado com sucesso!")
     return redirect(url_for('users'))
-
-@app.route('/search', methods=['GET'])
-def search_users():
-    query = request.args.get('query', '')
-    if query:
-        conn = connect_to_postgres()
-        users = []
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT id, username FROM users WHERE username ILIKE %s", (f'%{query}%',))
-            users = cur.fetchall()
-            cur.close()
-            conn.close()
-        return render_template('users.html', users=users)
-    return redirect(url_for('users'))
-
-def create_users_table():
-    conn = connect_to_postgres()
-    if conn:
-        cur = conn.cursor()
-        create_table_query = '''
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            email VARCHAR(100) UNIQUE NOT NULL,
-            profile_picture VARCHAR(255)
-        );
-        '''
-        try:
-            cur.execute(create_table_query)
-            conn.commit()
-        except Exception as e:
-            print(f"Error creating table: {e}")
-        finally:
-            cur.close()
-            conn.close()
-
-
 
 if __name__ == '__main__':
     app.run(debug=True)
