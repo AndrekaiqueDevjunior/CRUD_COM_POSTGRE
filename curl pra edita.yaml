@@ -1,0 +1,5 @@
+curl -X POST https://api.dropboxapi.com/oauth2/token \
+  -d code=opofLKHSFEEAAAAAAAAAQD0ozmuk3amz3InPD1XReeI \
+  -d grant_type=authorization_code \
+  -d redirect_uri=http://localhost:5000/callback \
+  -u yp30zjdb400mots:rz4tnusa4dt27e2

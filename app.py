@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_from_directory, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import psycopg2
@@ -8,8 +8,15 @@ from psycopg2 import OperationalError, Error
 from dotenv import load_dotenv
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
-import dropbox
 import requests
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
+
+
+def upload_to_cloudinary(file):
+    upload_result = cloudinary.uploader.upload(file)
+    return upload_result['secure_url']
 
 # Configuração do logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,15 +43,17 @@ app.config['MAIL_USE_SSL'] = False
 
 mail = Mail(app)
 
+# Configuração do Cloudinary
+cloudinary.config(
+    cloud_name=os.getenv('CLOUD_NAME'),
+    api_key=os.getenv('API_KEY'),
+    api_secret=os.getenv('API_SECRET')
+)
+
 # Configurações adicionais
 app.config['SECURITY_PASSWORD_SALT'] = os.getenv('SECURITY_PASSWORD_SALT', 'my_precious_two')
 
-# Configuração do Dropbox
-DROPBOX_CLIENT_ID = os.getenv('DROPBOX_CLIENT_ID')
-DROPBOX_CLIENT_SECRET = os.getenv('DROPBOX_CLIENT_SECRET')
-DROPBOX_REDIRECT_URI = os.getenv('DROPBOX_REDIRECT_URI')
-DROPBOX_ACCESS_TOKEN = os.getenv('DROPBOX_ACCESS_TOKEN')
-dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
+
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -76,12 +85,13 @@ def save_profile_picture(profile_picture):
         picture_filename = secure_filename(profile_picture.filename)
         picture_path = os.path.join(app.config['UPLOAD_FOLDER'], picture_filename)
         profile_picture.save(picture_path)
-        return picture_filename
+       # Fazer o upload para o Cloudinary
+        picture_url = upload_to_cloudinary(file_path)
+        # Opcional: Deletar o arquivo local após o upload
+        os.remove(file_path)
+        return picture_url
     return None
 
-def save_to_dropbox(local_path, dropbox_path):
-    with open(local_path, 'rb') as f:
-        dbx.files_upload(f.read(), dropbox_path)
 
 def generate_confirmation_token(email):
     serializer = URLSafeTimedSerializer(app.secret_key)
@@ -154,31 +164,50 @@ def register():
             return render_template('register.html')
 
         hashed_password = generate_password_hash(password)
-        picture_filename = None
+        profile_picture_url = None
 
         if profile_picture and allowed_file(profile_picture.filename):
-            picture_filename = save_profile_picture(profile_picture)
-            dropbox_path = f"/profile_pictures/{picture_filename}"
-            save_to_dropbox(os.path.join(app.config['UPLOAD_FOLDER'], picture_filename), dropbox_path)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(profile_picture.filename))
+            profile_picture.save(file_path)
+            profile_picture_url = upload_to_cloudinary(file_path)
+            if profile_picture_url is None:
+                flash("Erro ao fazer upload da imagem.", 'danger')
+                return render_template('register.html')
+            os.remove(file_path)
 
         try:
             conn = connect_to_postgres()
             if conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO users (username, email, password, profile_picture)
-                    VALUES (%s, %s, %s, %s)
-                """, (username, email, hashed_password, picture_filename))
-                conn.commit()
-                cur.close()
-                conn.close()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO users (username, email, password, profile_picture)
+                        VALUES (%s, %s, %s, %s)
+                    """, (username, email, hashed_password, profile_picture_url))
+                    conn.commit()
+                except Error as e:
+                    logging.error(f"Error registering user: {e}")
+                    flash(f"Erro ao cadastrar usuário: {e}", 'danger')
+                finally:
+                    cur.close()
+                    conn.close()
                 flash("Usuário cadastrado com sucesso!", 'success')
                 return redirect(url_for('login'))
             else:
                 flash("Erro ao conectar ao banco de dados.", 'danger')
         except Error as e:
+            logging.error(f"Error registering user: {e}")
             flash(f"Erro ao cadastrar usuário: {e}", 'danger')
     return render_template('register.html')
+
+
+@app.route('/profile/<int:user_id>')
+def profile(user_id):
+    user = get_user_by_id(user_id)
+    if not user:
+        flash('Usuário não encontrado.', 'danger')
+        return redirect(url_for('users'))
+
 
 @app.route('/view_user/<int:user_id>')
 def view_user(user_id):
@@ -245,22 +274,30 @@ def edit_user(user_id):
         username = request.form['username']
         email = request.form['email']
         password = request.form.get('password')
-        
-        file = request.files.get('profile_picture')
+        file = request.files.get('profile_picture')  # Obtenha o arquivo do formulário
+
+        # Defina um valor padrão para a URL da foto de perfil
+        profile_picture_url = user['profile_picture']
+
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            dropbox_path = f"/profile_pictures/{filename}"
-            save_to_dropbox(os.path.join(app.config['UPLOAD_FOLDER'], filename), dropbox_path)
-            profile_picture_url = dropbox_path
-        else:
-            profile_picture_url = user['profile_picture']
+            # Salva o arquivo temporariamente
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(file_path)
+
+            # Faz o upload para o Cloudinary
+            response = cloudinary.uploader.upload(file_path)
+            profile_picture_url = response.get('secure_url', profile_picture_url)
+            
+            # Remove o arquivo temporário
+            os.remove(file_path)
 
         update_user(user_id, username, email, password, profile_picture_url)
         flash('Usuário atualizado com sucesso!', 'success')
         return redirect(url_for('users'))
 
     return render_template('edit_user.html', user=user)
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -289,56 +326,6 @@ def logout():
     session.pop('username', None)
     flash('Você saiu com sucesso!', 'success')
     return redirect(url_for('login'))
-
-@app.route('/dropbox_login')
-def dropbox_login():
-    auth_url = f"https://www.dropbox.com/oauth2/authorize?client_id={DROPBOX_CLIENT_ID}&response_type=code&redirect_uri={DROPBOX_REDIRECT_URI}"
-    return redirect(auth_url)
-
-@app.route('/dropbox_callback')
-def dropbox_callback():
-    code = request.args.get('code')
-    if not code:
-        flash('Código de autenticação não encontrado.', 'danger')
-        return redirect(url_for('index'))
-
-    token_url = 'https://api.dropboxapi.com/oauth2/token'
-    payload = {
-        'code': code,
-        'grant_type': 'authorization_code',
-        'client_id': DROPBOX_CLIENT_ID,
-        'client_secret': DROPBOX_CLIENT_SECRET,
-        'redirect_uri': DROPBOX_REDIRECT_URI
-    }
-    response = requests.post(token_url, data=payload)
-    if response.status_code == 200:
-        data = response.json()
-        session['dropbox_access_token'] = data.get('access_token')
-        flash('Conectado ao Dropbox com sucesso!', 'success')
-        return redirect(url_for('index'))
-    else:
-        flash('Erro ao conectar ao Dropbox.', 'danger')
-        return redirect(url_for('index'))
-
-def refresh_dropbox_token(refresh_token):
-    url = "https://api.dropboxapi.com/oauth2/token"
-    data = {
-        'grant_type': 'refresh_token',
-        'refresh_token': refresh_token,
-        'client_id': os.getenv('DROPBOX_CLIENT_ID'),
-        'client_secret': os.getenv('DROPBOX_CLIENT_SECRET')
-    }
-    response = requests.post(url, data=data)
-    if response.status_code == 200:
-        new_token = response.json().get('access_token')
-        # Atualize o token no seu arquivo .env ou outro local seguro
-        # Aqui você deve garantir que o novo token seja armazenado corretamente
-        return new_token
-    else:
-        # Trate erros de renovação de token
-        print("Erro ao renovar o token:", response.json())
-        return None
-
 
 @app.route('/reset_password_request', methods=['GET', 'POST'])
 def reset_password_request():
@@ -386,12 +373,6 @@ def reset_password(token):
             return redirect(url_for('login'))
     return render_template('reset_password.html', token=token)
 
-# Exemplo de uso
-refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
-new_access_token = refresh_dropbox_token(refresh_token)
-if new_access_token:
-    # Atualize o Dropbox SDK com o novo token
-    dbx = dropbox.Dropbox(new_access_token)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
@@ -447,6 +428,56 @@ def delete_user(user_id):
         conn.close()
     flash("Usuário deletado com sucesso!")
     return redirect(url_for('users'))
+
+@app.route('/delete_multiple_users', methods=['POST'])
+def delete_multiple_users():
+    user_ids = request.form.getlist('user_ids')  # Obtém a lista de IDs dos usuários a serem excluídos
+
+    if not user_ids:
+        flash('Nenhum usuário selecionado para exclusão.', 'warning')
+        return redirect(url_for('users'))
+
+    conn = connect_to_postgres()
+    cursor = conn.cursor()
+
+    try:
+        # Converte a lista de IDs em uma string separada por vírgulas para usar no comando SQL
+        ids = ','.join(map(str, user_ids))
+
+        # Comando SQL para excluir os usuários com IDs especificados
+        cursor.execute(f'DELETE FROM users WHERE id IN ({ids})')
+        conn.commit()
+
+        flash('Usuários selecionados excluídos com sucesso.', 'success')
+    except Exception as e:
+        conn.rollback()
+        flash('Erro ao excluir usuários: ' + str(e), 'danger')
+    finally:
+        cursor.close()
+        conn.close()
+
+    return redirect(url_for('users'))
+
+def get_db_connection():
+    conn = psycopg2.connect(
+        host=current_app.config['DB_HOST'],
+        database=current_app.config['DB_NAME'],
+        user=current_app.config['DB_USER'],
+        password=current_app.config['DB_PASSWORD']
+    )
+    return conn
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Recebe a carga do evento
+    event_data = request.json
+    print("Recebido evento:", event_data)
+    
+    # Processa o evento (ex: salvar informações no banco de dados)
+    # Adicione seu código de processamento aqui
+    
+    return jsonify({"status": "success"}), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
