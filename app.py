@@ -12,6 +12,8 @@ import requests
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
+from flask_sqlalchemy import SQLAlchemy
+from models import db, User
 
 
 def upload_to_cloudinary(file):
@@ -26,6 +28,10 @@ load_dotenv()
 
 # Criação da instância do Flask
 app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('POSTGRES_URL')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db.init_app(app)
+
 
 # Configurações do Flask
 app.secret_key = os.getenv('SECRET_KEY', 'fallbacksecretkey')
@@ -478,6 +484,29 @@ def webhook():
     # Adicione seu código de processamento aqui
     
     return jsonify({"status": "success"}), 200
+
+
+@app.route('/search', methods=['GET', 'POST'])
+def search():
+    query = ''
+    results = []
+
+    query = request.args.get('query')
+    if query:
+        results = User.query.filter(User.username.ilike(f'%{query}%')).all()
+    else:
+        results = User.query.all()
+    
+    if request.method == 'POST':
+        query = request.form.get('query', '')  # Obtém a query do corpo do POST
+    elif request.method == 'GET':
+        query = request.args.get('query', '')  # Obtém a query da URL para GET
+
+    if query:
+        # Realiza a busca na tabela User com a query fornecida
+        results = User.query.filter(User.username.ilike(f'%{query}%')).all()
+
+    return render_template('search_results.html', results=results, query=query)
 
 if __name__ == '__main__':
     app.run(debug=True)
